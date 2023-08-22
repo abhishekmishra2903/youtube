@@ -18,4 +18,5 @@ To execute the file we can follow following steps:
 5) IDE would provide 'streamlit run <path>' which can be run on cmd or terminal
 6) A local host link will be generated which can be used on browser to access the dashboard
 
-Note: If the youtube channel is popular then it will have a large amount of data, and fetchhing and analysing the same can consume some time accordingly.
+Note1: If the youtube channel is popular then it will have a large amount of data, and fetchhing and analysing the same can consume some time accordingly.
+Note2: Google api_key expires after a fixed number of requests. If it shows Error stating that request quota has exceeded, change the api_key at line 19.
