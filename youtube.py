@@ -19,7 +19,7 @@ mycursor.execute('USE youtube')
 api_key='AIzaSyB7JHLS2gNXvr57RQ0wbnzXGGRoKmY3SvQ'
 
 # streamlit page set-up
-st.header('Youtube data warehouring and querying')
+st.header('Youtube data warehousing and querying')
 channel_id_input=st.text_input('Enter upto 10 comma separated channel_ids',value='UCUKOyIIDIaLLT8T-ce636Qw,UCU5WVGehJ1m-58HpynrFnaA')
 channel_list=str(channel_id_input).split(',')
 channel_list=str(channel_id_input).split(',')
