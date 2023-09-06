@@ -1,294 +1,381 @@
+# importing necessary libraries
+
 import pandas as pd
 import streamlit as st
 import pymongo
 import mysql.connector
-channel_list=['UCLEL4SHIKwnOkjY0hVcLFeQ']
 
 # establishing sql connection
+
 mydb = mysql.connector.connect(
   host="localhost",
   user="root",
   password="5115269000",
 auth_plugin='mysql_native_password'
 )
-
 mycursor = mydb.cursor()
 mycursor.execute("set autocommit=1")
 mycursor.execute('USE youtube')
 
-api_key='AIzaSyB7JHLS2gNXvr57RQ0wbnzXGGRoKmY3SvQ'
+# stocking api keys, and establishing connection
 
-# streamlit page set-up
-st.header('Youtube data warehousing and querying')
-channel_id_input=st.text_input('Enter upto 10 comma separated channel_ids',value='UCUKOyIIDIaLLT8T-ce636Qw,UCU5WVGehJ1m-58HpynrFnaA')
-channel_list=str(channel_id_input).split(',')
-channel_list=str(channel_id_input).split(',')
-
-# fetching channel data
+# kindly generate an api_key from your account and put it in the line below.
+api_key='***************************************'
 
 from googleapiclient.discovery import build
 youtube=build('youtube','v3',developerKey=api_key)
 
+# streamlit page set-up
+st.header(':film_frames: Youtube data warehousing and querying')
 
-def get_info(youtube,channel_ids):
-    all_data=[]
-    request=youtube.channels().list(
-    part='snippet,contentDetails,statistics,status,brandingSettings,contentOwnerDetails,id,localizations',
-    id=','.join(channel_ids))
-    response=request.execute()
 
-    for i in range(len(response['items'])):
-        data=dict(channel_id=channel_ids[i],
-                channel_name=response['items'][i]['snippet']['title'],
-                channel_views=response['items'][i]['statistics']['viewCount'],
-                channel_description=response['items'][i]['snippet']['description'],
-                channel_status=response['items'][i]['status']['privacyStatus'])
-        all_data.append(data)
-    return all_data
-channel_data=get_info(youtube,channel_list)
+# displaying the channel details that are existing in sql database
 
-# fetching playlist data
+channel_id_list=[]
+mycursor.execute("select channel_id,channel_name from channel_data")
+for i in mycursor:
+    channel_id_list.append({'channel_id':i[0],'channel_name':i[1]})
+default=pd.DataFrame(channel_id_list)
+st.sidebar.write('Channels present in database')
+st.sidebar.dataframe(default)
 
-def playlist_info(youtube,channel_ids):
-    playlist_data=[]
-    request=youtube.channels().list(
-    part='contentDetails,snippet',
-    id=','.join(channel_ids))
-    response=request.execute()
-    
-    for i in range(len(response['items'])):
-        data=dict(playlist_id=response['items'][i]['contentDetails']['relatedPlaylists']['uploads'],
-                  channel_id=channel_ids[i],
-                  playlist_name=response['items'][i]['snippet']['title'])
-        playlist_data.append(data)
-    return playlist_data
+# taking input of channel id from the user
 
-playlist_data=playlist_info(youtube,channel_list)
-df_playlist=pd.DataFrame(playlist_data)
+channel_id_input=st.sidebar.text_input('Enter channel_id to load data into Mongo server',value='UCU5WVGehJ1m-58HpynrFnaA')
 
-# get list of video ids from playlist ids
-video_ids=[]
-def get_video_ids(youtube,playlist_id):
-    request=youtube.playlistItems().list(
-    part='contentDetails',
-    playlistId=playlist_id,
-    maxResults=50)
-    response=request.execute()
-    
-    for i in range(len(response['items'])):
-        video_ids.append(response['items'][i]['contentDetails']['videoId'])
+# Defining a switch so that the fetching and updation of data on mongo do not 
+# happen if the data is already saved once
+
+client = pymongo.MongoClient("mongodb://localhost:27017")
+db=client.youtube
+collection=db.channel_data
+do_mongo=True
+x=collection.find()
+for i in x:
+    if i['channel_id']==channel_id_input:
+        do_mongo=False
+
         
-    next_page_token=response.get('nextPageToken')
-    more_pages=True
+if do_mongo==True:
     
-    while more_pages:
-        if next_page_token is None:
-            more_pages=False
-        else:
-            request=youtube.playlistItems().list(
-                    part='contentDetails',
-                    playlistId=playlist_id,
-                    maxResults=50,
-                    pageToken=next_page_token)
-            response=request.execute()
-            for i in range(len(response['items'])):
-                video_ids.append(response['items'][i]['contentDetails']['videoId'])
-            next_page_token=response.get('nextPageToken')
-    
-for i in df_playlist['playlist_id'].tolist():
-    get_video_ids(youtube,i)
-    
-# fetching video data
+# defining function to collect channel data and return a dictionary of the data
 
-def get_video_details(youtube,ids):
-    video_stats=[]
+    def get_info(youtube,channel_id_input):
+        request=youtube.channels().list(
+        part='snippet,contentDetails,statistics,status,brandingSettings,contentOwnerDetails,id,localizations',
+        id=channel_id_input)
+        response=request.execute()
+        data=dict(channel_id=channel_id_input,
+                channel_name=response['items'][0]['snippet']['title'],
+                channel_views=response['items'][0]['statistics']['viewCount'],
+                channel_description=response['items'][0]['snippet']['description'],
+                channel_status=response['items'][0]['status']['privacyStatus'])
+        return data
+ 
+# calling the function with the input channel id and inserting obtained data in mongodb
+
+    channel_data=get_info(youtube,channel_id_input)
+    collection.insert_many([channel_data])
     
-    for i in range(0,len(ids),50):
-        request=youtube.videos().list(
-        part='contentDetails,snippet, statistics',
-        id=','.join(ids[i:i+50]))
+# defining function to collect playlist data and return a dictionary of the data
+    
+    def playlist_info(youtube,channel_ids):
+        request=youtube.channels().list(
+        part='contentDetails,snippet',
+        id=channel_ids)
         response=request.execute()
         
-        for videos in response['items']:
-            data=dict(video_id=videos['id'],
-                            channel_id=videos['snippet']['channelId'],
-                            video_name=videos['snippet']['title'],
-                            video_description=videos['snippet']['description'],
-                            published_date=videos['snippet']['publishedAt'],
-                            view_count=videos['statistics']['viewCount'],
-                            like_count=videos['statistics'].get('likeCount'),
-                            comment_count=videos['statistics'].get('commentCount'),
-                            duration=videos['contentDetails']['duration'],
-                            thumbnail=videos['snippet']['thumbnails']['default']['url'],
-                            
-                            caption_status=videos['contentDetails']['caption'])
-            video_stats.append(data)
-    return video_stats
+        data=dict(playlist_id=response['items'][0]['contentDetails']['relatedPlaylists']['uploads'],
+                  channel_id=channel_ids,
+                  playlist_name=response['items'][0]['snippet']['title'])
+        return data
 
-video_data=get_video_details(youtube,video_ids)
-
-# fetching comment data
-
-comment_info=[]
-def get_comment_data(youtube,id):
-    request=youtube.commentThreads().list(
-    part='snippet',
-    videoId=id,
-    maxResults=100)
-    response=request.execute()
+# calling the function with input channel id and inserting obtained data in mongodb
     
-    for i in range(len(response['items'])):
-        data=dict(
-        comment_id=response['items'][i]['snippet']['topLevelComment']['id'],
-        video_id=response['items'][i]['snippet']['topLevelComment']['snippet']['videoId'],
-        comment_text=response['items'][i]['snippet']['topLevelComment']['snippet']['textDisplay'],
-        comment_author=response['items'][i]['snippet']['topLevelComment']['snippet']['authorDisplayName'],
-        comment_published_date=response['items'][i]['snippet']['topLevelComment']['snippet']['publishedAt'])
-        comment_info.append(data)
-    next_page_token=response.get('nextPageToken')
-    more_pages=True
+    playlist_data=playlist_info(youtube,channel_id_input)
+    collection=db.playlist_data
+    collection.insert_many([playlist_data])
     
-    while more_pages:
-        if next_page_token is None:
-            more_pages=False
-        else:
-            request=youtube.commentThreads().list(
-            part='snippet',
-            videoId=id,
-            maxResults=100,
-            pageToken=next_page_token)
+# video list of a playlist is available in playlistItems so we fetch the video_ids
+# Later with the help of this list we will be obtaining video details.
+
+    video_ids=[]
+    def get_video_ids(youtube,playlist_id):
+        request=youtube.playlistItems().list(
+        part='contentDetails',
+        playlistId=playlist_id,
+        maxResults=50)
+        response=request.execute()
+        
+        for i in range(len(response['items'])):
+            video_ids.append(response['items'][i]['contentDetails']['videoId'])
+            
+        next_page_token=response.get('nextPageToken')
+        more_pages=True
+        
+        while more_pages:
+            if next_page_token is None:
+                more_pages=False
+            else:
+                request=youtube.playlistItems().list(
+                        part='contentDetails',
+                        playlistId=playlist_id,
+                        maxResults=50,
+                        pageToken=next_page_token)
+                response=request.execute()
+                for i in range(len(response['items'])):
+                    video_ids.append(response['items'][i]['contentDetails']['videoId'])
+                next_page_token=response.get('nextPageToken')
+        
+    get_video_ids(youtube,playlist_data['playlist_id'])
+        
+# fetching video data
+    
+    def get_video_details(youtube,ids):
+        video_stats=[]
+        
+        for i in range(0,len(ids),50):
+            request=youtube.videos().list(
+            part='contentDetails,snippet, statistics',
+            id=','.join(ids[i:i+50]))
             response=request.execute()
-            for i in range(len(response['items'])):
-                data=dict(
-                    comment_id=response['items'][i]['snippet']['topLevelComment']['id'],
-                    video_id=response['items'][i]['snippet']['topLevelComment']['snippet']['videoId'],
-                    comment_text=response['items'][i]['snippet']['topLevelComment']['snippet']['textDisplay'],
-                    comment_author=response['items'][i]['snippet']['topLevelComment']['snippet']['authorDisplayName'],
-                    comment_published_date=response['items'][i]['snippet']['topLevelComment']['snippet']['publishedAt'])
-                comment_info.append(data)
-            next_page_token=response.get('nextPageToken')
-for i in video_ids:
-    get_comment_data(youtube,i)
+            
+            for videos in response['items']:
+                data=dict(video_id=videos['id'],
+                                channel_id=videos['snippet']['channelId'],
+                                video_name=videos['snippet']['title'],
+                                video_description=videos['snippet']['description'],
+                                published_date=videos['snippet']['publishedAt'],
+                                view_count=videos['statistics']['viewCount'],
+                                like_count=videos['statistics'].get('likeCount'),
+                                comment_count=videos['statistics'].get('commentCount'),
+                                duration=videos['contentDetails']['duration'],
+                                thumbnail=videos['snippet']['thumbnails']['default']['url'],
+                                caption_status=videos['contentDetails']['caption'])
+                video_stats.append(data)
+        return video_stats
     
-# deleting previous data if any and uploading new data to mongodb altas
+    video_data=get_video_details(youtube,video_ids)
     
-mongo_switch=st.button('Fetch data into MongoDB')
-if mongo_switch==True:
-    client = pymongo.MongoClient("mongodb+srv://abhishek:5115269000@abhishekmishra.qsvrhj7.mongodb.net/")
-    db=client.youtube
-    collection=db.info
-    if collection.estimated_document_count()!=0:
-        collection.drop()
-    collection.insert_many(channel_data)
-    collection.insert_many(playlist_data)
+# replacing None with 0 in comment_count and then uploading data into mongodb
+
+    for i in range(len(video_data)):
+        if video_data[i]['comment_count']==None:
+            video_data[i]['comment_count']=0
+    collection=db.video_data
     collection.insert_many(video_data)
-    collection.insert_many(comment_info)
     
-# deleting any pre-existing table to optimise space utilisation
-
-sql_switch=st.button('Transfer data to sql')
-if sql_switch==True:
-    table_list=[]
-    mycursor.execute('show tables')
-    for i in mycursor:
-        table_list.append(i[0])
-    if 'channel_data' in table_list:
-        mycursor.execute('drop table channel_data')
-    if 'video_data' in table_list:
-        mycursor.execute('drop table video_data')
-    if 'playlist_data' in table_list:
-        mycursor.execute('drop table playlist_data')
-    if 'comment_data' in table_list:
-        mycursor.execute('drop table comment_data')
+# fetching comment data
+    
+    comment_data=[]
+    def get_comment_data(youtube,id):
+        request=youtube.commentThreads().list(
+        part='snippet',
+        videoId=id,
+        maxResults=100)
+        response=request.execute()
         
-# creating table with channel data
-    
-    mycursor.execute("CREATE TABLE channel_data (channel_id VARCHAR(255) ,channel_name VARCHAR(255),channel_views INT,channel_description TEXT, channel_status VARCHAR(255))")
-    
-    sql="insert into channel_data(channel_id,channel_name,channel_views,channel_description,channel_status) values(%s,%s,%s,%s,%s)"
-    
-    list1=[]
-    for i in channel_data:
-        list1.append(tuple(i.values()))
-    
-    mycursor.executemany(sql,list1)
-    
-# creating table with playlist data
-    
-    mycursor.execute("CREATE TABLE playlist_data (playlist_id VARCHAR(255) ,channel_id VARCHAR(255),playlist_name VARCHAR(255))")
-    
-    sql="insert into playlist_data(playlist_id,channel_id,playlist_name) values(%s,%s,%s)"
-    
-    list2=[]
-    for i in playlist_data:
-        list2.append(list(i.values()))
-    
-    mycursor.executemany(sql,list2)
-    
-# creating table with video data
-
-    mycursor.execute("CREATE TABLE video_data (video_id VARCHAR(255),channel_id VARCHAR(255),video_name VARCHAR(255),video_description TEXT,published_date DATETIME,view_count INT,like_count INT,comment_count INT,duration INT,thumbnail VARCHAR(255),caption_status VARCHAR(255))")
-    sql="insert into video_data(video_id,channel_id,video_name, video_description, published_date,view_count,like_count,comment_count ,duration ,thumbnail,caption_status) values(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"
-    
-    list4=[]
-    for i in video_data:
-        list4.append(list(i.values()))
+        for i in range(len(response['items'])):
+            data=dict(
+            comment_id=response['items'][i]['snippet']['topLevelComment']['id'],
+            video_id=response['items'][i]['snippet']['topLevelComment']['snippet'].get('videoId'),
+            comment_text=response['items'][i]['snippet']['topLevelComment']['snippet'].get('textDisplay'),
+            comment_author=response['items'][i]['snippet']['topLevelComment']['snippet'].get('authorDisplayName'),
+            comment_published_date=response['items'][i]['snippet']['topLevelComment']['snippet'].get('publishedAt'))
+            comment_data.append(data)
+        next_page_token=response.get('nextPageToken')
+        more_pages=True
         
-    # replacing None with 0
-    for i in list4:
-        for k in range(11):
-            if i[k]==None:
-                i.insert(k+1,0)
-                i.pop(k)
-                
-    # to extract relevant datetime format for sql
-    for i in list4:
-        s=i[4][:10]+' '+i[4][11:19]
-        i.insert(5,s)
-        i.pop(4)
-    
-    #convert duration in second
-    def to_sec(s):
-        if len(s)==4 and s[-1]=='M':
-            return int(s[2:3])*60
-        elif len(s)==5 and s[-1]=='M':
-            return int(s[2:4])*60
-        elif len(s)==4 and s[-1]=='S':
-            return int(s[2])
-        elif len(s)==5 and s[-1]=='S':
-            return int(s[2:4])
-        else:
-            if s[3]=='M':
-                minute=int(s[2])
+        while more_pages:
+            if next_page_token is None:
+                more_pages=False
             else:
-                minute=int(s[2:4])
-            if s[-3]=='M':
-                second=int(s[-2])
-            else:
-                second=int(s[-3:-1])
-            return (minute * 60)+second
+                request=youtube.commentThreads().list(
+                part='snippet',
+                videoId=id,
+                maxResults=100,
+                pageToken=next_page_token)
+                response=request.execute()
+                for i in range(len(response['items'])):
+                    data=dict(
+                        comment_id=response['items'][i]['snippet']['topLevelComment']['id'],
+                        video_id=response['items'][i]['snippet']['topLevelComment']['snippet'].get('videoId'),
+                        comment_text=response['items'][i]['snippet']['topLevelComment']['snippet'].get('textDisplay'),
+                        comment_author=response['items'][i]['snippet']['topLevelComment']['snippet'].get('authorDisplayName'),
+                        comment_published_date=response['items'][i]['snippet']['topLevelComment']['snippet'].get('publishedAt'))
+                    comment_data.append(data)
+                next_page_token=response.get('nextPageToken')
+
+# from video_ids, removing the ids for which comment is turned off. The passing each 
+# video id in the above function to append the comment data into comment_data. Then
+# uploading the data into mongodb   
+
+    for i in range(len(video_data)):
+        if video_data[i]['comment_count']==0 or video_data[i]['comment_count']=='0':
+            video_ids.remove(video_data[i]['video_id'])
+    for i in video_ids:
+        get_comment_data(youtube,i)
+    collection=db.comment_data
+    collection.insert_many(comment_data)
     
-    for i in list4:
-        i.insert(9,to_sec(i[8]))
-        i.pop(8)
+# storing the video_ids in video_id_list table in sql which will be required for easy
+# transfer of data from mongodb to sql 
+    
+    video_id_sql=[[i] for i in video_ids]
+    sql="insert into video_id_list(video_id) values (%s)"
+    mycursor.executemany(sql,video_id_sql)
+
+# creating a sql switch just like mongodb, so that repetition can be avoided during re-run.
+
+do_sql=True
+for i in channel_id_list:
+    if i['channel_id']==channel_id_input:
+        do_sql=False
         
-    mycursor.executemany(sql,list4)
+if do_sql==True:
     
-# creating table with comment data
-    mycursor.execute("CREATE TABLE comment_data (comment_id VARCHAR(255) ,video_id VARCHAR(255),comment_text TEXT,comment_author VARCHAR(255), comment_published_date DATETIME)")
-    sql="insert into comment_data(comment_id,video_id,comment_text,comment_author,comment_published_date) values(%s,%s,%s,%s,%s)"
+# defining button to start the transfer process   
     
-    list5=[]
-    for i in comment_info:
-        list5.append(list(i.values())[0:5])
+    sql_switch=st.sidebar.button('Transfer data to SQL server')
+    if sql_switch==True:
+        
+# uploading data in channel_data table        
+        
+        channel_dict=[]
+        collection=db.channel_data
+        x=collection.find({'channel_id':channel_id_input})
+        for i in x:
+            channel_dict.append([i['channel_id'],i['channel_name'],i['channel_views'],i['channel_description'],i['channel_status']])
+        sql="insert into channel_data(channel_id,channel_name,channel_views,channel_description,channel_status) values(%s,%s,%s,%s,%s)"
+        mycursor.executemany(sql,channel_dict)
+
+# uploading data in playlist_data table
     
-    for i in list5:
-        s=i[4][:10]+' '+i[4][11:19]
-        i.insert(5,s)
-        i.pop(4)
+        playlist_dict=[]
+        collection=db.playlist_data
+        x=collection.find({'channel_id':channel_id_input})
+        for i in x:
+            playlist_dict.append([i['playlist_id'],i['channel_id'],i['playlist_name']])
+        sql="insert into playlist_data(playlist_id,channel_id,playlist_name) values(%s,%s,%s)"
+        mycursor.executemany(sql,playlist_dict)
+
+# uploading data in video_data table
     
-    mycursor.executemany(sql,list5)
+        video_dict=[]
+        collection=db.video_data
+        x=collection.find({'channel_id':channel_id_input})
+        for i in x:
+            video_dict.append([i['video_id'],i['channel_id'],i['video_name'], i['video_description'], i['published_date'],i['view_count'],i['like_count'],i['comment_count'] ,i['duration'] ,i['thumbnail'],i['caption_status']])
+        
+# replacing None with 0
+        
+        for i in video_dict:
+            for k in range(11):
+                if i[k]==None:
+                    i.insert(k+1,0)
+                    i.pop(k)
+                    
+# to extract relevant datetime format for sql
+        
+        for i in video_dict:
+            s=i[4][:10]+' '+i[4][11:19]
+            i.insert(5,s)
+            i.pop(4)
+            
+#convert duration in second
+
+        def to_sec(s):
+            
+# some entries are in unusual format like P0D,             
+            if s[1]!='T':
+                return 0
+            
+# some entries are having hour entries. We are considering hour duration upto 2 digits.
+           
+            elif (len(s)>3 and s[3]=='H') or (len(s)>4 and s[4]=='H') :
+                l1=[*s]
+                l1.remove('P')
+                l1.remove('T')
+                if l1[1]=='H':
+                    hour=int(l1[0])
+                elif l1[2]=='H':
+                    hour=int(s[2:4])
+                if 'M' in l1:
+                    if l1.index('M')-l1.index('H')==2:
+                        minute=int(l1[l1.index('H')+1])
+                    elif l1.index('M')-l1.index('H')==3:
+                        minute=int(l1[l1.index('H')+1]+l1[l1.index('H')+2])
+                if 'M' in l1 and 'S' not in l1:
+                    return (hour*60*60)+(minute*60)
+                if 'S' in l1 and 'M' in l1:
+                    if l1.index('S')-l1.index('M')==2:
+                        second=int(l1[l1.index('M')+1])
+                    elif l1.index('S')-l1.index('M')==3:
+                        second=int(l1[l1.index('M')+1]+l1[l1.index('M')+2])
+                    return (hour*60*60)+(minute*60)+second
+                elif 'S' in l1 and 'M' not in l1:
+                    if l1.index('S')-l1.index('H')==2:
+                        second=int(l1[l1.index('H')+1])
+                    elif l1.index('S')-l1.index('H')==3:
+                        second=int(l1[l1.index('H')+1]+l1[l1.index('H')+2])
+                    return (hour*60*60)+second
+
+# for entries without hour value
     
+            else:
+                if len(s)==4 and s[-1]=='M':
+                    return int(s[2:3])*60
+                elif len(s)==5 and s[-1]=='M':
+                    return int(s[2:4])*60
+                elif len(s)==4 and s[-1]=='S':
+                    return int(s[2])
+                elif len(s)==5 and s[-1]=='S':
+                    return int(s[2:4])
+                else:
+                    if s[3]=='M':
+                        minute=int(s[2])
+                    else:
+                        minute=int(s[2:4])
+                    if s[-3]=='M':
+                        second=int(s[-2])
+                    else:
+                        second=int(s[-3:-1])
+                    return (minute * 60)+second 
+        for i in video_dict:
+            i.insert(9,to_sec(i[8]))
+            i.pop(8)     
+        sql="insert into video_data(video_id,channel_id,video_name, video_description, published_date,view_count,like_count,comment_count ,duration ,thumbnail,caption_status) values(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"      
+        mycursor.executemany(sql,video_dict)
+
+# fetching video_ids that we had stored earlier. These are the ids for which relevant
+# comment data is available
+    
+        video_id_list=[]
+        mycursor.execute('select * from video_id_list')
+        for i in mycursor:
+            video_id_list.append(i[0])
+        comment_dict=[]
+        collection=db.comment_data
+        for j in video_id_list:
+            x=collection.find({'video_id':j})
+            for i in x:
+                comment_dict.append([i['comment_id'],i['video_id'],i['comment_text'],i['comment_author'],i['comment_published_date']])
+        
+# Putting date and time into appropriate sql format        
+        
+        for i in comment_dict:
+            s=i[4][:10]+' '+i[4][11:19]
+            i.insert(5,s)
+            i.pop(4)
+            
+        sql="insert into comment_data(comment_id,video_id,comment_text,comment_author,comment_published_date) values(%s,%s,%s,%s,%s)"
+        mycursor.executemany(sql,comment_dict)
+        
+# truncating the video_id_list table as it is needed to be updated with fresh video_ids
+# each time we add data from a new channel.      
+        
+        mycursor.execute("truncate table video_id_list") 
+
 # listing the queries
 
 q0='Select any query'       
@@ -323,7 +410,16 @@ if selection==q1:
 # sql for query 2
 
 if selection==q2:
+    mycursor.execute("select channel_id from channel_data")
     
+# fetching list of channels    
+    
+    channel_list=[]
+    for i in mycursor:
+        channel_list.append(i[0])
+        
+# appending video_count list with video counts and name with names        
+        
     video_count=[]
     name=[]
     sql="select count(channel_id) from video_data where video_data.channel_id=(%s)"
@@ -331,6 +427,8 @@ if selection==q2:
         mycursor.execute(sql,[i])
         for i in mycursor:
             video_count.append(i[0])
+    
+# Selecting the maximum of video_count and forming dataframe with corresponding data     
     
     sql1="select channel_name from channel_data where channel_id=(%s)"
     mycursor.execute(sql1,[channel_list[video_count.index(max(video_count))]])
@@ -352,15 +450,37 @@ if selection==q3:
 # sql for query 4
 
 if selection==q4:
+    
+# collecting video_ids with comment data    
+    
+    video_ids=[]
+    mycursor.execute("select distinct video_id from comment_data")
+    for i in mycursor:
+        video_ids.append(i[0])
+        
+# updating list comment_count_list with comment count of each video.       
+        
     sql="select count(video_id) from comment_data where comment_data.video_id=(%s)"
     comment_count_list=[]
     for i in video_ids:
         mycursor.execute(sql,[i])
         for k in mycursor:
             comment_count_list.append(k[0])
+            
+# forming list of video_name            
+            
+    video_name=[]
+    sql='select video_name from video_data where video_id=(%s)'
+    for i in video_ids:
+        mycursor.execute(sql,[i])
+        for k in mycursor:
+            video_name.append(k[0])
+            
+# forming dictionary from the above two lists and forming dataframe to be displayed            
+            
     demo4=[]
     for i in range(len(video_ids)):
-        demo4.append(dict(video_names=video_data[i].get('video_name'),comment_count=comment_count_list[i]))
+        demo4.append(dict(video_names=video_name[i],comment_count=comment_count_list[i]))
     result4=pd.DataFrame(demo4)
     st.dataframe(result4)
 
@@ -402,6 +522,10 @@ if selection==q8:
     demo8=[]
     for i in mycursor:
         demo8.append(i[0])
+        
+# since there can be repition of channel_name if it has multiple videos published in 2022,
+# we apply list(set()). Then we convert to dataframe and display.        
+        
     dummy=set(demo8)
     demo8=list(dummy)
     demo8_dict=[]
@@ -430,9 +554,3 @@ if selection==q10:
         
     result10=pd.DataFrame(demo10)
     st.dataframe(result10)
-
-
-
-
-
-
